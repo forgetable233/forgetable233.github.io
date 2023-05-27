@@ -4,6 +4,27 @@
   
   
   <entry>
+    <title>nerf阅读笔记</title>
+    <link href="/2023/05/28/nerf-yue-du-bi-ji/"/>
+    <url>/2023/05/28/nerf-yue-du-bi-ji/</url>
+    
+    <content type="html"><![CDATA[<h1 id="NeRF阅读笔记"><a href="#NeRF阅读笔记" class="headerlink" title="NeRF阅读笔记"></a>NeRF阅读笔记</h1><h2 id="总述"><a href="#总述" class="headerlink" title="总述"></a>总述</h2><p>Neural Radiance Fields（神经辐射场）</p><p>解决问题：新视角图片生成，同时可以进行三维重建</p><p>输入：空间位置$(x, y, z, \theta, \phi)$，包括采样点的位置以及角度。</p><p>输出：$(r, g, b, \sigma)$，体素密度以及位置相关的RGB。</p><p>与SFM的对比：没有点云的存在，利用一个MLP保存的输入图片中的光学信息，并利用光学信息反推出三维模型，同时能够生成高质量的新视角图片。与传统重建方法相比，模型大小显著降低（只有一个MLP），但相较于点云或mesh而言拓展性下降。</p><p>先验输入的为相机在世界坐标系下的坐标，同时限制采样点的最近距离和最远距离。</p><h2 id="基本流程以及理解"><a href="#基本流程以及理解" class="headerlink" title="基本流程以及理解"></a>基本流程以及理解</h2><ol><li>根据相机位姿进行采样点选取，将采样点输入MLP中，得到输出</li><li>在一视线方向进行渲染，与原图片的RGB作差，构建Loss，并进行训练</li><li>完成训练后可以通过MLP进行新视角的生成</li></ol><p>nerf网络结构如下：</p><p><img src="/img/post_img/Nerf%E7%BD%91%E7%BB%9C%E7%BB%93%E6%9E%84.png"></p><h3 id="利用MLP进行建模"><a href="#利用MLP进行建模" class="headerlink" title="利用MLP进行建模"></a>利用MLP进行建模</h3><p>通过MLP将采样点的深度信息$(x, y, z, \theta, \phi)$，投影到$(R, G, B, \sigma)$上。</p><p><img src="/img/post_img/nerf.png"></p><p>输入的位置信息是每一个采样点的位置信息，输出的为每一个采样点的$R, G, B, \sigma$。</p><p>这里的采样点起始是随机采样的，也就是采样点在显示空间中不一定真的存在物体，这就导致nerf需要较为全面的观察角度才能达成较好的重建效果，这也导致nerf存在比较严重的虚影问题。</p><p>$R, G, B$可以看作是物体发出的光，而$\sigma$可以理解为这个位置的不透明度，也就是吸收光的能力。<strong>计算机图形学</strong>，渲染方程需要理解一下。</p><p>这里从论文中的一个图可以理解</p><p><img src="/img/post_img/%E5%85%89%E7%85%A7.png"></p><p>从图中可以看出来，尽管是同一个地方，由于观察角度不同，最后的结果也不同。</p><p>从这里可以理解，$RGB$是与观察角度相关的，$\sigma$是物体本身的性质，与观察角度无关</p><p>MLP的训练方法：根据MLP得到的结果生成输入图，并与原图利用L2损失构建损失函数，令生成图尽可能的与原图一致。</p><h3 id="进行render得到新图片"><a href="#进行render得到新图片" class="headerlink" title="进行render得到新图片"></a>进行render得到新图片</h3><p><img src="/img/post_img/%E4%BD%93%E6%B8%B2%E6%9F%93%E6%96%B9%E7%A8%8B"></p><p>上图为简单介绍的体渲染方程的流程，最后入眼的光为整个流程中的积分结果。</p><p>通过上述过程得到点的信息后，进行积分得到生成图，方程如下：</p><p>这里的体积密度$\sigma$其实可以看作光线在取样点的概率的微分，那么在计算一个点的真实颜色的过程中，需要对概率和颜色进行统一的积分<br>$$<br>r(t)&#x3D;o+td<br>\<br>C(r)&#x3D;\int_{t_n}^{t_f}T(t)\sigma(r(t))c(r(t),d), {\rm d}t \<br>T(t)&#x3D;exp(-\int_{t_n}^t\sigma(r(s)), \rm ds)<br>$$<br>积分过程没有使用确定性正积，输入为离散的体素。这是由于其只能在离散点进行查询</p><p>实际上在运算过程中的方法如下：<br>$$<br>C(t)&#x3D;\sum_{i&#x3D;1}^{N}T_i(1-exp(-\sigma_i\delta_i))c_i\<br>T_i&#x3D;exp(-\sum_{j&#x3D;i}^{i-1}\sigma_j\delta_j)\<br>\delta_i&#x3D;t_{i+1}-t_i<br>$$<br>方法为分层的抽样，在一个区间中，将其均分为$N$部分，随后随机均匀的从每一个区间中进行抽样：<br>$$<br>t_i \sim u[t_n+\frac{i-1}{N}(t_f-t_n), t_n+\frac{i}{N}(t_f-t_n)]<br>$$</p><h4 id="分层抽样的理解"><a href="#分层抽样的理解" class="headerlink" title="分层抽样的理解"></a>分层抽样的理解</h4><p>主要目的是由于在选取采样点的过程中，采样点起始是随机采样的。如果选用简单的离散化积分方法，那么采样点的选取位置其实是可以预测的，这就导致MLP只能在这些固定的位置进行优化。导致MLP无法应对任意位姿的视角生成。</p><p>这里解决方法就是使用分层抽样，增加了一个随机的过程，防止MLP只在整数位置进行优化，提升MLP效果。</p><h4 id="体渲染方程的理解"><a href="#体渲染方程的理解" class="headerlink" title="体渲染方程的理解"></a>体渲染方程的理解</h4><p>这部i分与体素渲染做对比，文章中主要是和Alpha渲染方法做对比，一个比较明显的区别是，现在这种渲染方法能够解决原有的Alpha渲染为离散空间导致的无法对任意位置进行重建的问题.</p><p>针对光照问题，利用$\sigma$可以进行建模，其为与$(x, y, z)$相关的值，可以仿照在输入一系列图片中的建模效果。<strong>如果输入的图片的光照情况完全不同，会导致nerf建模失败</strong></p><p>体素分析有一篇文章：</p><h4 id="粗细网络的意义"><a href="#粗细网络的意义" class="headerlink" title="粗细网络的意义"></a>粗细网络的意义</h4><p>主要目的是在保证采样点尽量选取在物体周围的同时，降低运算量。</p><p>流程如下:</p><p><img src="/img/post_img/%E7%B2%97%E7%BB%86%E7%BD%91%E7%BB%9C.png"></p><p>先使用粗网络大概估计哪里体素密度较高,也就是存在物体的概率较大,随后在$\sigma$高的地方增大采样密度，从而使采样点更多的集中在物体周围。</p><h2 id="传统三维重建方法"><a href="#传统三维重建方法" class="headerlink" title="传统三维重建方法"></a>传统三维重建方法</h2><p><img src="/img/post_img/%E4%BC%A0%E7%BB%9F%E4%B8%89%E7%BB%B4%E9%87%8D%E5%BB%BA.png"></p><h2 id="Nerf的不足"><a href="#Nerf的不足" class="headerlink" title="Nerf的不足"></a>Nerf的不足</h2><p>个人的理解如下：</p><ol><li>网络拓展性差，多个网络无法合并</li><li>在训练过程中没有使用任何几何信息</li><li>只能对静态场景进行建模</li><li>当前的系统没有考虑输入图片光照信息不一致的情况</li><li>需要高精度的先验相机位姿（这里找到了几篇开创性文章，看完后在更改这里）</li><li>3D建模效果有虚影</li></ol><p>上述不足基本上都找到了一些研究文章，以后慢慢继续学习</p>]]></content>
+    
+    
+    
+    <tags>
+      
+      <tag>nerf</tag>
+      
+      <tag>reconstruction</tag>
+      
+    </tags>
+    
+  </entry>
+  
+  
+  
+  <entry>
     <title>Hello World</title>
     <link href="/2023/05/26/hello-world/"/>
     <url>/2023/05/26/hello-world/</url>
